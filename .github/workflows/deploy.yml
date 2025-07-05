@@ -1,0 +1,145 @@
+name: Deploy Azure AD Migration Lambdas to AWS
+
+on:
+  push:
+    branches:
+      - main # Or your default branch
+
+permissions:
+  id-token: write # Required for OIDC AWS authentication
+  contents: read # Required to checkout the code
+
+jobs:
+  deploy_lambdas:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: '3.9' # Choose a Python version supported by AWS Lambda
+
+      - name: Configure AWS Credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v2 # Use v2 or later for OIDC
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }} # Store your IAM Role ARN in GitHub Secrets
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}   # Store your AWS region in GitHub Secrets (e.g., us-east-1)
+
+      - name: Install dependencies and create deployment packages
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          pip install -r requirements.txt -t ./package_compliance_checker
+          pip install -r requirements.txt -t ./package_migration_monitor
+          deactivate
+
+          # Copy the main script into the package directories
+          cp src/azure_ad_migration.py ./package_compliance_checker/
+          cp src/__init__.py ./package_compliance_checker/ # if you have an __init__.py in src
+
+          cp src/azure_ad_migration.py ./package_migration_monitor/
+          cp src/__init__.py ./package_migration_monitor/ # if you have an __init__.py in src
+
+          # Create ZIP files for Lambda deployment
+          cd package_compliance_checker
+          zip -r ../azure_ad_compliance_checker_lambda.zip .
+          cd ..
+
+          cd package_migration_monitor
+          zip -r ../azure_ad_migration_monitor_lambda.zip .
+          cd ..
+
+      - name: Deploy Compliance Checker Lambda
+        env:
+          LAMBDA_NAME: ${{ secrets.LAMBDA_COMPLIANCE_CHECKER_NAME }} # Expect this secret to be set
+          LAMBDA_HANDLER: src.azure_ad_migration.lambda_handler
+          ZIP_FILE: azure_ad_compliance_checker_lambda.zip
+          ENV_JSON_FILE: lambda_compliance_checker_env.json
+          LAMBDA_ROLE_ARN: ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          echo "Updating function code for $LAMBDA_NAME..."
+          aws lambda update-function-code \
+            --function-name "$LAMBDA_NAME" \
+            --zip-file "fileb://$ZIP_FILE" \
+            --publish
+
+          echo "Waiting for function code update to complete for $LAMBDA_NAME..."
+          aws lambda wait function-updated --function-name "$LAMBDA_NAME"
+
+          echo "Updating function configuration for $LAMBDA_NAME..."
+          # Note: The ENV_JSON_FILE should be securely populated or reference secure parameters.
+          # For simplicity here, we assume it exists. Add error handling or dynamic creation if needed.
+          aws lambda update-function-configuration \
+            --function-name "$LAMBDA_NAME" \
+            --handler "$LAMBDA_HANDLER" \
+            --role "$LAMBDA_ROLE_ARN" \
+            --environment "file://$ENV_JSON_FILE" # Using file method for env vars
+            # You might also need to set --runtime, --timeout, --memory-size if they differ from existing
+            # or if you want to ensure they are set to specific values.
+            # e.g. --runtime python3.9 --timeout 300 --memory-size 512
+          echo "Lambda $LAMBDA_NAME deployment complete."
+
+      - name: Deploy Migration Monitor Lambda
+        env:
+          LAMBDA_NAME: ${{ secrets.LAMBDA_MIGRATION_MONITOR_NAME }} # Expect this secret to be set
+          LAMBDA_HANDLER: src.azure_ad_migration.migration_monitor_handler
+          ZIP_FILE: azure_ad_migration_monitor_lambda.zip
+          ENV_JSON_FILE: lambda_migration_monitor_env.json
+          LAMBDA_ROLE_ARN: ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          echo "Updating function code for $LAMBDA_NAME..."
+          aws lambda update-function-code \
+            --function-name "$LAMBDA_NAME" \
+            --zip-file "fileb://$ZIP_FILE" \
+            --publish
+
+          echo "Waiting for function code update to complete for $LAMBDA_NAME..."
+          aws lambda wait function-updated --function-name "$LAMBDA_NAME"
+
+          echo "Updating function configuration for $LAMBDA_NAME..."
+          aws lambda update-function-configuration \
+            --function-name "$LAMBDA_NAME" \
+            --handler "$LAMBDA_HANDLER" \
+            --role "$LAMBDA_ROLE_ARN" \
+            --environment "file://$ENV_JSON_FILE"
+            # e.g. --runtime python3.9 --timeout 300 --memory-size 256
+          echo "Lambda $LAMBDA_NAME deployment complete."
+
+      # Security Note on Environment Variables in JSON:
+      # Storing plaintext secrets in JSON files committed to your repository is insecure.
+      # The ENV_JSON_FILE should ideally contain only non-sensitive variables or
+      # use placeholders that are substituted during the CI/CD pipeline from GitHub Secrets,
+      # or reference secrets stored in AWS Secrets Manager or Systems Manager Parameter Store
+      # which the Lambda function can then fetch at runtime using its execution role.
+      # Example of dynamic JSON creation (use with caution and ensure proper quoting):
+      # echo "{\"Variables\":{\"VAULT_ADDR\":\"${{ secrets.VAULT_ADDR }}\",\"OTHER_VAR\":\"value\"}}" > $ENV_JSON_FILE
+
+      # Note: The VAULT_AWS_AUTH_ROLE specific environment variables for Lambda have been removed
+      # as the new Vault IAM auth method relies on AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+      # and AWS_SESSION_TOKEN being present in the Lambda execution environment directly.
+      # If using AppRole for Vault auth instead of AWS IAM auth for Lambda,
+      # your environment variables (in the JSON file) would include:
+      #   "VAULT_ROLE_ID": "value_from_secrets_or_aws_sm",
+      #   "VAULT_SECRET_ID": "value_from_secrets_or_aws_sm"
+      #
+      # The JSON files (lambda_compliance_checker_env.json, lambda_migration_monitor_env.json)
+      # should be structured like:
+      # {
+      #   "Variables": {
+      #     "VAR1": "value1",
+      #     "VAR2": "value2"
+      #   }
+      # }
+
+      # Consider adding event triggers here if needed (e.g., for the monitor Lambda)
+      # Example: aws events put-rule --name "DailyMigrationMonitorRule" --schedule-expression "cron(0 5 * * ? *)" # Runs daily at 5 AM UTC
+      # aws lambda add-permission --function-name ... --statement-id ... --action lambda:InvokeFunction --principal events.amazonaws.com --source-arn ... (rule ARN)
+      # VAULT_SECRET_ID=${{ secrets.VAULT_SECRET_ID_COMPLIANCE }}
+      # (and similar for the monitor Lambda)
+
+      # Consider adding event triggers here if needed (e.g., for the monitor Lambda)
+      # Example: aws events put-rule --name "DailyMigrationMonitorRule" --schedule-expression "cron(0 5 * * ? *)" # Runs daily at 5 AM UTC
+      # aws lambda add-permission --function-name ... --statement-id ... --action lambda:InvokeFunction --principal events.amazonaws.com --source-arn ... (rule ARN)
+      # aws events put-targets --rule DailyMigrationMonitorRule --targets "Id"="1","Arn"="arn:aws:lambda:..."

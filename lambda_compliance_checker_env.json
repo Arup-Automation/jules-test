@@ -1,0 +1,18 @@
+{
+    "Variables": {
+        "VAULT_ADDR": "YOUR_VAULT_ADDR_SECRET_FROM_GH_OR_AWS_SM",
+        "VAULT_NAMESPACE": "YOUR_VAULT_NAMESPACE_SECRET_FROM_GH_OR_AWS_SM",
+        "VAULT_SECRET_PATH": "secret/data/app/azure_migration_compliance",
+        "VAULT_KV_MOUNT_POINT": "secret",
+        "MIGRATION_DAY_OFFSET": "14"
+        // For AWS IAM Auth to Vault (preferred for Lambda):
+        // "VAULT_AWS_AUTH_ROLE": "your_vault_iam_auth_role_for_compliance_lambda"
+        // Ensure Lambda execution role has sts:AssumeRole for this Vault IAM role if it's different,
+        // OR ensure Lambda execution role itself is directly trusted by Vault's AWS auth method.
+        // The script will use the Lambda's execution role credentials if AWS_ACCESS_KEY_ID etc. are present.
+
+        // For AppRole Auth to Vault (alternative):
+        // "VAULT_ROLE_ID": "YOUR_VAULT_APPROLE_ROLE_ID_FROM_GH_OR_AWS_SM",
+        // "VAULT_SECRET_ID": "YOUR_VAULT_APPROLE_SECRET_ID_FROM_GH_OR_AWS_SM"
+    }
+}
